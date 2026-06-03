@@ -1,4 +1,6 @@
 import os
+import time
+from collections import deque
 from typing import Any, Dict, Optional, Tuple
 
 import requests
@@ -13,6 +15,10 @@ from model_utils import (
     PredictionError,
     handle_predict_payload,
 )
+
+
+RATE_LIMIT_REQUESTS = 10
+RATE_LIMIT_WINDOW_SECONDS = 60
 
 
 def get_secret(name: str) -> Optional[str]:
@@ -33,6 +39,24 @@ def get_api_key() -> str:
 def get_api_url() -> Optional[str]:
     api_url = get_config_value("API_URL")
     return api_url.rstrip("/") if api_url else None
+
+
+def check_session_rate_limit() -> Tuple[bool, Optional[int]]:
+    if "prediction_timestamps" not in st.session_state:
+        st.session_state.prediction_timestamps = deque()
+
+    now = time.time()
+    timestamps = st.session_state.prediction_timestamps
+
+    while timestamps and now - timestamps[0] >= RATE_LIMIT_WINDOW_SECONDS:
+        timestamps.popleft()
+
+    if len(timestamps) >= RATE_LIMIT_REQUESTS:
+        retry_after = int(RATE_LIMIT_WINDOW_SECONDS - (now - timestamps[0])) + 1
+        return False, retry_after
+
+    timestamps.append(now)
+    return True, None
 
 
 def call_predict(payload: Dict[str, Any], api_key: str) -> Tuple[int, Dict[str, Any]]:
@@ -57,6 +81,15 @@ def call_predict(payload: Dict[str, Any], api_key: str) -> Tuple[int, Dict[str, 
 
         return response.status_code, body
 
+    allowed, retry_after = check_session_rate_limit()
+    if not allowed:
+        return 429, {
+            "detail": (
+                "Session rate limit exceeded. Maximum 10 predictions per "
+                f"minute. Try again in {retry_after} seconds."
+            )
+        }
+
     try:
         return 200, handle_predict_payload(payload, api_key=api_key)
     except InvalidAPIKeyError as exc:
@@ -72,6 +105,8 @@ def show_response(status_code: int, body: Dict[str, Any], success_message: str) 
 
     if status_code == 200:
         st.success(success_message)
+    elif status_code == 429:
+        st.warning("Rate limit exceeded. Please wait before trying again.")
     else:
         st.error("Request failed")
 
