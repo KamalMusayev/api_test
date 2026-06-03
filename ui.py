@@ -1,98 +1,153 @@
+import os
+from typing import Any, Dict, Optional, Tuple
+
 import requests
 import streamlit as st
 
+from model_utils import (
+    DEFAULT_API_KEY,
+    InvalidAPIKeyError,
+    InvalidFeaturesError,
+    InvalidPayloadError,
+    ModelFileMissingError,
+    PredictionError,
+    handle_predict_payload,
+)
 
-API_URL = "http://127.0.0.1:8000/predict"
-API_KEY = "demo-secret-key"
+
+def get_secret(name: str) -> Optional[str]:
+    try:
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+
+def get_config_value(name: str) -> Optional[str]:
+    return get_secret(name) or os.getenv(name)
+
+
+def get_api_key() -> str:
+    return get_config_value("API_KEY") or DEFAULT_API_KEY
+
+
+def get_api_url() -> Optional[str]:
+    api_url = get_config_value("API_URL")
+    return api_url.rstrip("/") if api_url else None
+
+
+def call_predict(payload: Dict[str, Any], api_key: str) -> Tuple[int, Dict[str, Any]]:
+    api_url = get_api_url()
+
+    if api_url:
+        url = api_url if api_url.endswith("/predict") else f"{api_url}/predict"
+        response = requests.post(
+            url,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-API-Key": api_key,
+            },
+            timeout=10,
+        )
+
+        try:
+            body = response.json()
+        except ValueError:
+            body = {"error": "invalid_response", "message": response.text}
+
+        return response.status_code, body
+
+    try:
+        return 200, handle_predict_payload(payload, api_key=api_key)
+    except InvalidAPIKeyError as exc:
+        return 401, exc.to_dict()
+    except (InvalidPayloadError, InvalidFeaturesError) as exc:
+        return 400, exc.to_dict()
+    except (ModelFileMissingError, PredictionError) as exc:
+        return 500, exc.to_dict()
+
+
+def show_response(status_code: int, body: Dict[str, Any], success_message: str) -> None:
+    st.write("Status code:", status_code)
+
+    if status_code == 200:
+        st.success(success_message)
+    else:
+        st.error("Request failed")
+
+    st.json(body)
 
 
 st.set_page_config(
     page_title="Iris ML Prediction UI",
-    page_icon="🌸",
-    layout="centered"
+    page_icon=":material/local_florist:",
+    layout="centered",
 )
 
-st.title("🌸 Iris ML Prediction API Demo")
+st.title("Iris ML Prediction")
 
-st.write(
-    "This simple UI sends flower measurements to the FastAPI `/predict` endpoint "
-    "and shows the model prediction."
-)
+api_url = get_api_url()
+api_key = get_api_key()
+
+if api_url:
+    st.info(f"External API mode is active: {api_url}")
+else:
+    st.info("Direct model prediction mode is active.")
 
 st.divider()
 
 mode = st.radio(
     "Choose prediction mode:",
-    ["Single prediction", "Batch prediction"]
+    ["Single prediction", "Batch prediction"],
+    horizontal=True,
 )
-
-headers = {
-    "Content-Type": "application/json",
-    "X-API-Key": API_KEY
-}
-
 
 if mode == "Single prediction":
     st.subheader("Single Prediction")
 
-    sepal_length = st.number_input("Sepal length", value=5.1)
-    sepal_width = st.number_input("Sepal width", value=3.5)
-    petal_length = st.number_input("Petal length", value=1.4)
-    petal_width = st.number_input("Petal width", value=0.2)
+    col1, col2 = st.columns(2)
+    with col1:
+        sepal_length = st.number_input("Sepal length", value=5.1)
+        petal_length = st.number_input("Petal length", value=1.4)
+    with col2:
+        sepal_width = st.number_input("Sepal width", value=3.5)
+        petal_width = st.number_input("Petal width", value=0.2)
 
     payload = {
         "features": [
             sepal_length,
             sepal_width,
             petal_length,
-            petal_width
+            petal_width,
         ]
     }
 
     st.write("Request payload:")
     st.json(payload)
 
-    if st.button("Predict"):
+    if st.button("Predict", type="primary"):
         try:
-            response = requests.post(
-                API_URL,
-                json=payload,
-                headers=headers,
-                timeout=10
-            )
-
-            st.write("Status code:", response.status_code)
-
-            if response.status_code == 200:
-                st.success("Prediction successful")
-                st.json(response.json())
-            else:
-                st.error("Request failed")
-                st.json(response.json())
-
+            status_code, body = call_predict(payload, api_key)
+            show_response(status_code, body, "Prediction successful")
         except requests.exceptions.ConnectionError:
-            st.error("FastAPI server is not running. Start it with: py -m uvicorn app:app --reload")
-
-        except Exception as e:
-            st.error(f"Unexpected error: {e}")
-
+            st.error("External API is not reachable.")
+        except Exception as exc:
+            st.error(f"Unexpected error: {exc}")
 
 else:
     st.subheader("Batch Prediction")
 
-    st.write("This sends multiple flower records to the same `/predict` endpoint.")
-
     col1, col2 = st.columns(2)
 
     with col1:
-        st.write("Flower 1")
+        st.markdown("**Flower 1**")
         f1_sepal_length = st.number_input("Flower 1 sepal length", value=5.1)
         f1_sepal_width = st.number_input("Flower 1 sepal width", value=3.5)
         f1_petal_length = st.number_input("Flower 1 petal length", value=1.4)
         f1_petal_width = st.number_input("Flower 1 petal width", value=0.2)
 
     with col2:
-        st.write("Flower 2")
+        st.markdown("**Flower 2**")
         f2_sepal_length = st.number_input("Flower 2 sepal length", value=6.7)
         f2_sepal_width = st.number_input("Flower 2 sepal width", value=3.0)
         f2_petal_length = st.number_input("Flower 2 petal length", value=5.2)
@@ -106,8 +161,8 @@ else:
                     f1_sepal_length,
                     f1_sepal_width,
                     f1_petal_length,
-                    f1_petal_width
-                ]
+                    f1_petal_width,
+                ],
             },
             {
                 "id": "flower_2",
@@ -115,65 +170,37 @@ else:
                     f2_sepal_length,
                     f2_sepal_width,
                     f2_petal_length,
-                    f2_petal_width
-                ]
-            }
+                    f2_petal_width,
+                ],
+            },
         ]
     }
 
     st.write("Request payload:")
     st.json(payload)
 
-    if st.button("Predict batch"):
+    if st.button("Predict batch", type="primary"):
         try:
-            response = requests.post(
-                API_URL,
-                json=payload,
-                headers=headers,
-                timeout=10
-            )
-
-            st.write("Status code:", response.status_code)
-
-            if response.status_code == 200:
-                st.success("Batch prediction successful")
-                st.json(response.json())
-            else:
-                st.error("Request failed")
-                st.json(response.json())
-
+            status_code, body = call_predict(payload, api_key)
+            show_response(status_code, body, "Batch prediction successful")
         except requests.exceptions.ConnectionError:
-            st.error("FastAPI server is not running. Start it with: py -m uvicorn app:app --reload")
-
-        except Exception as e:
-            st.error(f"Unexpected error: {e}")
-
+            st.error("External API is not reachable.")
+        except Exception as exc:
+            st.error(f"Unexpected error: {exc}")
 
 st.divider()
 
 st.subheader("API Key Test")
 
 wrong_key_payload = {
-    "features": [5.1, 3.5, 1.4, 0.2]
+    "features": [5.1, 3.5, 1.4, 0.2],
 }
 
 if st.button("Test wrong API key"):
     try:
-        response = requests.post(
-            API_URL,
-            json=wrong_key_payload,
-            headers={
-                "Content-Type": "application/json",
-                "X-API-Key": "wrong-key"
-            },
-            timeout=10
-        )
-
-        st.write("Status code:", response.status_code)
-        st.json(response.json())
-
+        status_code, body = call_predict(wrong_key_payload, "wrong-key")
+        show_response(status_code, body, "Wrong API key was accepted")
     except requests.exceptions.ConnectionError:
-        st.error("FastAPI server is not running.")
-
-    except Exception as e:
-        st.error(f"Unexpected error: {e}")
+        st.error("External API is not reachable.")
+    except Exception as exc:
+        st.error(f"Unexpected error: {exc}")

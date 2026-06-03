@@ -1,4 +1,4 @@
-import joblib
+import pickle
 from sklearn.datasets import load_iris
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
@@ -40,7 +40,8 @@ def main():
         "accuracy": accuracy
     }
 
-    joblib.dump(artifact, "model.pkl")
+    with open("model.pkl", "wb") as file:
+        pickle.dump(artifact, file)
 
     print("Model trained successfully.")
     print(f"Accuracy: {accuracy:.4f}")
